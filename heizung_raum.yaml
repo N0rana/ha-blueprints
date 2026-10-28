@@ -51,6 +51,18 @@ blueprint:
             entity:
               filter:
                 - domain: input_text
+        soll_anzeige:
+          name: Berechnete Soll-Temperatur (optional, Helfer)
+          description: >-
+            Zahl-Helfer (4,5–30,5 °C, Schrittweite 0,5, Modus „Eingabefeld“), in den
+            die berechnete Soll-Temperatur geschrieben wird – für Dashboard und
+            Verlauf. Nur Anzeige: Änderungen von Hand werden beim nächsten Lauf
+            überschrieben.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: input_number
 
     zentral:
       name: Zentrale Einstellungen
@@ -415,6 +427,7 @@ variables:
   e_warm: !input temp_warm
   e_kalt: !input temp_kalt
   e_status: !input status
+  e_soll_anzeige: !input soll_anzeige
   e_heizen: !input heizen_erlaubt
   e_frost: !input temp_frost
   e_belegt: !input belegt
@@ -659,6 +672,7 @@ actions:
           # auf alle Thermostate des Raums überträgt.
           - stop: Manuelle Änderung übernommen
 
+  # Status und berechnete Soll-Temperatur für das Dashboard ausgeben
   - if:
       - "{{ e_status != '' }}"
     then:
@@ -668,6 +682,18 @@ actions:
         data:
           value: >-
             {{ grund }} → {{ soll }} °C{% if raum_werte | count > 0 %} (Raum {{ raum_ist | round(1) }} °C){% endif %}
+  - if:
+      - "{{ e_soll_anzeige != '' }}"
+      - "{{ states(e_soll_anzeige) | float(-99) != soll | float }}"
+    then:
+      - action: input_number.set_value
+        target:
+          entity_id: "{{ e_soll_anzeige }}"
+        data:
+          value: >-
+            {% set lo = state_attr(e_soll_anzeige, 'min') | float(4.5) %}
+            {% set hi = state_attr(e_soll_anzeige, 'max') | float(30.5) %}
+            {{ [[soll | float, lo] | max, hi] | min }}
 
   # 3) An jedes Thermostat senden – nur wenn sich etwas ändert
   - repeat:
