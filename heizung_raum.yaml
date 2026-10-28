@@ -1,0 +1,631 @@
+blueprint:
+  name: Heizung – Raumsteuerung
+  description: >-
+    Steuert die Homematic-IP-Thermostate eines Raums direkt.
+
+    Die Soll-Temperatur ergibt sich nach Priorität (oben gewinnt):
+    1. Heizen nicht erlaubt → Frostschutz
+    2. Fenster offen (nach Verzögerung) → Frostschutz
+    3. Übersteuerung Warm/Kalt/Manuell (bis der Timer abläuft) –
+       „Manuell“ wird automatisch gesetzt, wenn am Thermostat gedreht wird
+    4. Benötigte Personen nicht zu Hause → Absenktemperatur
+    5. Raum belegt (Wärme-Szene) oder Zeitplan aktiv → Komforttemperatur
+    6. Sonst → Absenktemperatur
+
+    Optional wird die vom Thermostat gemessene Temperatur anhand externer
+    Thermometer korrigiert. Es wird nur gesendet, wenn sich der Zielwert
+    ändert (schont den Homematic-Duty-Cycle).
+  domain: automation
+  input:
+    raum:
+      name: Raum
+      icon: mdi:radiator
+      input:
+        thermostate:
+          name: Thermostate
+          description: Climate-Entitäten der Homematic-Thermostate in diesem Raum.
+          selector:
+            entity:
+              filter:
+                - domain: climate
+              multiple: true
+        temp_warm:
+          name: Komforttemperatur (Helfer)
+          selector:
+            entity:
+              filter:
+                - domain: input_number
+        temp_kalt:
+          name: Absenktemperatur (Helfer)
+          selector:
+            entity:
+              filter:
+                - domain: input_number
+        status:
+          name: Status-Text (optional, Helfer)
+          description: >-
+            Text-Helfer, in den geschrieben wird, warum gerade wie geheizt wird
+            (für das Dashboard).
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: input_text
+
+    zentral:
+      name: Zentrale Einstellungen
+      icon: mdi:tune
+      input:
+        heizen_erlaubt:
+          name: Heizen erlaubt (Helfer)
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+        temp_frost:
+          name: Frostschutztemperatur (Helfer)
+          selector:
+            entity:
+              filter:
+                - domain: input_number
+        manuell_erzwingen:
+          name: Thermostate in manuellen Modus zwingen
+          description: >-
+            Stellt die Thermostate auf „heat“ (Manu), falls sie im Automatikmodus
+            stehen. Sonst würde das Wochenprogramm der CCU den Sollwert
+            beim nächsten Schaltpunkt überschreiben.
+          default: true
+          selector:
+            boolean: {}
+
+    fenster_bereich:
+      name: Fenster
+      icon: mdi:window-open-variant
+      input:
+        fenster:
+          name: Fensterkontakte
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: binary_sensor
+              multiple: true
+        fenster_verzoegerung:
+          name: Verzögerung Fenster offen (Helfer, Sekunden)
+          description: So lange muss ein Fenster offen sein, bevor auf Frostschutz gestellt wird.
+          selector:
+            entity:
+              filter:
+                - domain: input_number
+
+    belegung:
+      name: Belegung, Szenen & Zeitplan
+      icon: mdi:lightbulb-group
+      input:
+        belegt:
+          name: Raum belegt (Helfer)
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+        waerme_szenen:
+          name: Wärme-Szenen
+          description: Nur diese Szenen schalten den Raum auf „belegt“.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: scene
+              multiple: true
+        lichter:
+          name: Lichter des Raums
+          description: Sind alle diese Lichter lange genug aus, wird „belegt“ ausgeschaltet.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: light
+              multiple: true
+        belegt_aus_verzoegerung:
+          name: Verzögerung bis „belegt“ aus (Helfer, Minuten)
+          selector:
+            entity:
+              filter:
+                - domain: input_number
+        zeitplan:
+          name: Heizzeiten (Zeitplan-Helfer, optional)
+          description: Während ein Zeitplan aktiv ist, wird auf Komforttemperatur geheizt.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: schedule
+              multiple: true
+
+    anwesenheit:
+      name: Anwesenheit
+      icon: mdi:account-multiple
+      input:
+        anwesenheit_modus:
+          name: Wann wird geheizt?
+          default: eine
+          selector:
+            select:
+              options:
+                - label: Anwesenheit ignorieren
+                  value: egal
+                - label: Mindestens eine der Personen ist zu Hause
+                  value: eine
+                - label: Alle der Personen sind zu Hause
+                  value: alle
+        personen:
+          name: Personen
+          description: >-
+            Personen, die für diesen Raum zählen. Leer lassen = irgendjemand
+            zu Hause (zone.home).
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: person
+              multiple: true
+
+    uebersteuerung:
+      name: Manuelle Übersteuerung
+      icon: mdi:hand-back-right
+      input:
+        override_auswahl:
+          name: Übersteuerung (Dropdown-Helfer)
+          description: >-
+            Optionen müssen exakt „Automatik“, „Warm“, „Kalt“ und „Manuell“ heißen.
+          selector:
+            entity:
+              filter:
+                - domain: input_select
+        override_timer:
+          name: Übersteuerung Timer (Helfer)
+          selector:
+            entity:
+              filter:
+                - domain: timer
+        override_stunden:
+          name: Dauer der Übersteuerung (Helfer, Stunden)
+          selector:
+            entity:
+              filter:
+                - domain: input_number
+        manuell_erkennen:
+          name: Änderungen am Thermostat übernehmen
+          description: >-
+            Wird die Temperatur am Thermostat (Drehrad) oder per Thermostat-Karte
+            im Dashboard geändert, gilt sie als Übersteuerung „Manuell“ für die
+            eingestellte Dauer und wird auf alle Thermostate des Raums übertragen.
+            Aus = der berechnete Wert wird wiederhergestellt.
+          default: true
+          selector:
+            boolean: {}
+        manuell_temp:
+          name: Manuelle Temperatur (Helfer)
+          description: Zahl-Helfer, z. B. 5–30 °C, Schrittweite 0,5. Speichert den zuletzt manuell gewählten Wert.
+          selector:
+            entity:
+              filter:
+                - domain: input_number
+
+    nachfrage:
+      name: Nachfrage bei Änderung am Thermostat
+      icon: mdi:cellphone-message
+      input:
+        empfaenger:
+          name: Empfänger
+          description: >-
+            Eine Zeile pro Person im Format
+            „person.anna = notify.mobile_app_pixel_8“.
+            Die Nachricht geht an die Personen, die gerade zu Hause sind;
+            ist keine davon zu Hause, an alle Eingetragenen.
+            Bis zur Antwort gilt die Standarddauer aus dem Helfer
+            „Dauer der Übersteuerung“. Leer lassen = keine Nachfrage.
+          default: []
+          selector:
+            text:
+              multiple: true
+        dauer_optionen:
+          name: Auswählbare Dauern (Stunden)
+          description: >-
+            Kommagetrennt, z. B. „1, 2, 4“. Android zeigt höchstens 3 Buttons an.
+          default: "1, 2, 4"
+          selector:
+            text: {}
+
+    korrektur:
+      name: Externe Thermometer (optional)
+      icon: mdi:thermometer
+      collapsed: true
+      input:
+        thermometer:
+          name: Raumthermometer
+          description: >-
+            Ein oder mehrere Thermometer im Raum, es wird der Mittelwert genutzt.
+            Leer lassen = Thermostate regeln mit ihrem eigenen Fühler.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+                  device_class: temperature
+              multiple: true
+        korrektur_max:
+          name: Maximale Korrektur
+          description: Wie weit der an das Thermostat gesendete Wert vom Soll abweichen darf.
+          default: 3
+          selector:
+            number:
+              min: 0
+              max: 5
+              step: 0.5
+              unit_of_measurement: K
+              mode: slider
+        abgleich_intervall:
+          name: Abgleich-Intervall
+          description: Wie oft der Sollwert neu berechnet und ggf. gesendet wird.
+          default: "/15"
+          selector:
+            select:
+              options:
+                - label: alle 10 Minuten
+                  value: "/10"
+                - label: alle 15 Minuten
+                  value: "/15"
+                - label: alle 20 Minuten
+                  value: "/20"
+                - label: alle 30 Minuten
+                  value: "/30"
+
+mode: queued
+max: 10
+
+trigger_variables:
+  tv_fenster_verz: !input fenster_verzoegerung
+  tv_belegt_verz: !input belegt_aus_verzoegerung
+
+triggers:
+  - trigger: homeassistant
+    event: start
+    id: sync
+  - trigger: time_pattern
+    minutes: !input abgleich_intervall
+    id: sync
+  - trigger: state
+    entity_id:
+      - !input heizen_erlaubt
+      - !input temp_warm
+      - !input temp_kalt
+      - !input temp_frost
+      - !input belegt
+      - !input manuell_temp
+      - zone.home
+    to: ~
+    id: sync
+  - trigger: state
+    entity_id: !input thermostate
+    attribute: temperature
+    id: manuell
+  - trigger: state
+    entity_id: !input zeitplan
+    to: ~
+    id: sync
+  - trigger: state
+    entity_id: !input personen
+    to: ~
+    id: sync
+  - trigger: state
+    entity_id: !input fenster
+    to: "on"
+    for:
+      seconds: "{{ states(tv_fenster_verz) | int(30) }}"
+    id: sync
+  - trigger: state
+    entity_id: !input fenster
+    to: "off"
+    id: sync
+  - trigger: state
+    entity_id: !input waerme_szenen
+    not_from: [unavailable, unknown]
+    not_to: [unavailable, unknown]
+    id: szene
+  - trigger: state
+    entity_id: !input lichter
+    to: "off"
+    for:
+      minutes: "{{ states(tv_belegt_verz) | float(10) }}"
+    id: licht_aus
+  - trigger: state
+    entity_id: !input override_auswahl
+    to: ~
+    id: override
+  - trigger: event
+    event_type: timer.finished
+    event_data:
+      entity_id: !input override_timer
+    id: override_ende
+  - trigger: event
+    event_type: mobile_app_notification_action
+    id: push_antwort
+
+variables:
+  thermostate: !input thermostate
+  e_warm: !input temp_warm
+  e_kalt: !input temp_kalt
+  e_status: !input status
+  e_heizen: !input heizen_erlaubt
+  e_frost: !input temp_frost
+  e_belegt: !input belegt
+  e_override: !input override_auswahl
+  e_stunden: !input override_stunden
+  e_manuell: !input manuell_temp
+  manuell_erkennen: !input manuell_erkennen
+  e_timer: !input override_timer
+  empfaenger: !input empfaenger
+  dauer_optionen: !input dauer_optionen
+  raum_name: "{{ area_name(thermostate[0]) or state_attr(thermostate[0], 'friendly_name') }}"
+  push_prefix: "HZOVR_{{ e_timer | replace('timer.', '') }}"
+  push_tag: "heizung_{{ e_timer | replace('timer.', '') }}"
+  # Empfänger-Zeilen „person.x = notify.y“ in eine Liste umwandeln
+  empf_liste: >-
+    {% set ns = namespace(l=[]) %}
+    {% for z in empfaenger %}
+      {% set t = z.split('=') %}
+      {% if t | count == 2 %}
+        {% set n = t[1] | trim %}
+        {% set ns.l = ns.l + [{'person': t[0] | trim,
+                               'dienst': n if n.startswith('notify.') else 'notify.' ~ n}] %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.l }}
+  fenster: !input fenster
+  lichter: !input lichter
+  zeitplan: !input zeitplan
+  personen: !input personen
+  anwesenheit_modus: !input anwesenheit_modus
+  thermometer: !input thermometer
+  k_max: !input korrektur_max
+  modus_erzwingen: !input manuell_erzwingen
+
+# Antworten auf Benachrichtigungen anderer Räume/Automationen sofort ignorieren
+conditions:
+  - >-
+    {{ trigger.id != 'push_antwort'
+       or (trigger.event.data.action is string
+           and trigger.event.data.action.startswith(push_prefix ~ '_')) }}
+
+actions:
+  # 1) Helfer aktualisieren, je nachdem was ausgelöst hat
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: szene
+        sequence:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: !input belegt
+      - conditions:
+          - condition: trigger
+            id: licht_aus
+          - "{{ lichter | select('is_state', 'on') | list | count == 0 }}"
+        sequence:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input belegt
+      - conditions:
+          - condition: trigger
+            id: override
+        sequence:
+          - if:
+              - "{{ states(e_override) in ['Warm', 'Kalt', 'Manuell'] }}"
+            then:
+              - action: timer.start
+                target:
+                  entity_id: !input override_timer
+                data:
+                  duration: "{{ (states(e_stunden) | float(2) * 3600) | int }}"
+            else:
+              - action: timer.cancel
+                target:
+                  entity_id: !input override_timer
+          # Offene Nachfrage entfernen, wenn nicht (mehr) manuell übersteuert wird
+          - if:
+              - "{{ states(e_override) != 'Manuell' }}"
+            then:
+              - repeat:
+                  for_each: "{{ empf_liste | map(attribute='dienst') | unique | list }}"
+                  sequence:
+                    - action: "{{ repeat.item }}"
+                      continue_on_error: true
+                      data:
+                        message: clear_notification
+                        data:
+                          tag: "{{ push_tag }}"
+      - conditions:
+          - condition: trigger
+            id: override_ende
+        sequence:
+          - action: input_select.select_option
+            target:
+              entity_id: !input override_auswahl
+            data:
+              option: Automatik
+      - conditions:
+          - condition: trigger
+            id: push_antwort
+        sequence:
+          - if:
+              - "{{ states(e_override) == 'Manuell' }}"
+            then:
+              - action: timer.start
+                target:
+                  entity_id: !input override_timer
+                data:
+                  duration: "{{ (trigger.event.data.action.split('_')[-1] | int(0)) * 60 }}"
+          - repeat:
+              for_each: "{{ empf_liste | map(attribute='dienst') | unique | list }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    message: clear_notification
+                    data:
+                      tag: "{{ push_tag }}"
+          - stop: Dauer per Benachrichtigung gewählt
+
+  # 2) Soll-Temperatur aus dem aktuellen Zustand berechnen
+  - variables:
+      heizen: "{{ is_state(e_heizen, 'on') }}"
+      fenster_offen: "{{ fenster | select('is_state', 'on') | list | count > 0 }}"
+      override: "{{ states(e_override) }}"
+      anwesend: >-
+        {% if anwesenheit_modus == 'egal' %}true
+        {% elif personen | count == 0 %}{{ states('zone.home') | int(1) > 0 }}
+        {% elif anwesenheit_modus == 'alle' %}{{ personen | reject('is_state', 'home') | list | count == 0 }}
+        {% else %}{{ personen | select('is_state', 'home') | list | count > 0 }}
+        {% endif %}
+      warm_gewuenscht: >-
+        {{ is_state(e_belegt, 'on') or zeitplan | select('is_state', 'on') | list | count > 0 }}
+      t_warm: "{{ states(e_warm) | float(20) }}"
+      t_kalt: "{{ states(e_kalt) | float(17) }}"
+      t_frost: "{{ states(e_frost) | float(8) }}"
+      t_manuell: "{{ states(e_manuell) | float(t_warm) }}"
+      grund: >-
+        {% if not heizen %}Heizen aus
+        {% elif fenster_offen %}Fenster offen
+        {% elif override == 'Warm' %}Übersteuert: warm
+        {% elif override == 'Kalt' %}Übersteuert: kalt
+        {% elif override == 'Manuell' %}Manuell
+        {% elif not anwesend %}Abwesend
+        {% elif warm_gewuenscht %}Komfort
+        {% else %}Absenkung
+        {% endif %}
+      frost_aktiv: "{{ grund in ['Heizen aus', 'Fenster offen'] }}"
+      soll: >-
+        {{ t_frost if frost_aktiv
+           else t_manuell if grund == 'Manuell'
+           else t_warm if grund in ['Übersteuert: warm', 'Komfort']
+           else t_kalt }}
+      raum_werte: "{{ thermometer | map('states') | select('is_number') | map('float') | list }}"
+      raum_ist: "{{ (raum_werte | sum / raum_werte | count) if raum_werte | count > 0 else 0 }}"
+      korrektur_aktiv: "{{ raum_werte | count > 0 and not frost_aktiv and k_max | float(0) > 0 }}"
+
+  # 2b) Manuelle Änderung am Thermostat erkennen.
+  #     Als manuell gilt: Die Änderung stammt nicht aus einer Automation/einem
+  #     Skript UND weicht von dem Wert ab, den dieser Blueprint senden würde
+  #     (damit die Rückmeldung unserer eigenen Befehle nicht als manuell gilt).
+  - if:
+      - condition: trigger
+        id: manuell
+      - "{{ manuell_erkennen and not frost_aktiv }}"
+      - "{{ trigger.to_state is not none and trigger.to_state.context.parent_id is none }}"
+      - "{{ trigger.to_state.attributes.temperature is number }}"
+    then:
+      - variables:
+          m_neu: "{{ trigger.to_state.attributes.temperature | float }}"
+          m_thermo_ist: "{{ trigger.to_state.attributes.current_temperature }}"
+          m_k: >-
+            {% if korrektur_aktiv and m_thermo_ist is number %}
+              {{ [[m_thermo_ist - raum_ist | float, -(k_max | float)] | max, k_max | float] | min }}
+            {% else %}0{% endif %}
+          m_erwartet: "{{ [[((soll | float + m_k | float) * 2) | round / 2, 4.5] | max, 30.5] | min }}"
+          # Wert am Thermostat in Raum-Soll zurückrechnen (Korrektur abziehen)
+          m_soll: >-
+            {% set lo = state_attr(e_manuell, 'min') | float(4.5) %}
+            {% set hi = state_attr(e_manuell, 'max') | float(30.5) %}
+            {{ [[((m_neu - m_k | float) * 2) | round / 2, lo] | max, hi] | min }}
+      - if:
+          - "{{ (m_neu - m_erwartet | float) | abs >= 0.25 }}"
+        then:
+          - action: input_number.set_value
+            target:
+              entity_id: !input manuell_temp
+            data:
+              value: "{{ m_soll }}"
+          - action: input_select.select_option
+            target:
+              entity_id: !input override_auswahl
+            data:
+              option: Manuell
+          - action: timer.start
+            target:
+              entity_id: !input override_timer
+            data:
+              duration: "{{ (states(e_stunden) | float(2) * 3600) | int }}"
+          # Nachfragen, wie lange – nur bei Personen, die zu Hause sind
+          - variables:
+              # Wer zu Hause ist; ist keiner davon da, alle Eingetragenen
+              an_wen: >-
+                {% set da = empf_liste | selectattr('person', 'is_state', 'home') | list %}
+                {{ (da if da | count > 0 else empf_liste)
+                   | map(attribute='dienst') | unique | list }}
+              dauern: >-
+                {{ dauer_optionen.split(',') | map('trim') | select('is_number')
+                   | map('float') | list }}
+          - repeat:
+              for_each: "{{ an_wen }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  continue_on_error: true
+                  data:
+                    title: "{{ raum_name }}: {{ m_soll }} °C"
+                    message: >-
+                      Am Thermostat wurde die Temperatur geändert. Wie lange soll das gelten?
+                      Ohne Antwort: {{ states(e_stunden) | float(2) | round(1) }} h.
+                    data:
+                      tag: "{{ push_tag }}"
+                      actions: >-
+                        {% set ns = namespace(l=[]) %}
+                        {% for d in dauern %}
+                          {% set ns.l = ns.l + [{'action': push_prefix ~ '_' ~ (d * 60) | int,
+                                                 'title': (d | int if d == d | int else d) ~ ' h'}] %}
+                        {% endfor %}
+                        {{ ns.l }}
+          # Die Helfer-Änderungen lösen einen neuen Lauf aus, der den Wert
+          # auf alle Thermostate des Raums überträgt.
+          - stop: Manuelle Änderung übernommen
+
+  - if:
+      - "{{ e_status != '' }}"
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: "{{ e_status }}"
+        data:
+          value: >-
+            {{ grund }} → {{ soll }} °C{% if korrektur_aktiv %} (Raum {{ raum_ist | round(1) }} °C){% endif %}
+
+  # 3) An jedes Thermostat senden – nur wenn sich etwas ändert
+  - repeat:
+      for_each: "{{ thermostate }}"
+      sequence:
+        - if:
+            - "{{ modus_erzwingen and states(repeat.item) not in ['heat', 'unavailable', 'unknown'] }}"
+          then:
+            - action: climate.set_hvac_mode
+              target:
+                entity_id: "{{ repeat.item }}"
+              data:
+                hvac_mode: heat
+        - variables:
+            thermo_ist: "{{ state_attr(repeat.item, 'current_temperature') }}"
+            ziel: >-
+              {% set z = soll | float %}
+              {% if korrektur_aktiv and thermo_ist is number %}
+                {% set k = [[thermo_ist - raum_ist | float, -(k_max | float)] | max, k_max | float] | min %}
+                {% set z = z + k %}
+              {% endif %}
+              {{ [[(z * 2) | round / 2, 4.5] | max, 30.5] | min }}
+            aktuell: "{{ state_attr(repeat.item, 'temperature') | float(-1) }}"
+        - if:
+            - "{{ (ziel | float - aktuell | float) | abs >= 0.25 }}"
+          then:
+            - action: climate.set_temperature
+              target:
+                entity_id: "{{ repeat.item }}"
+              data:
+                temperature: "{{ ziel }}"
