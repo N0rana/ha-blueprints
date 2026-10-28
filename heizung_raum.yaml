@@ -12,9 +12,11 @@ blueprint:
     5. Raum belegt (Wärme-Szene) oder Zeitplan aktiv → Komforttemperatur
     6. Sonst → Absenktemperatur
 
-    Optional wird die vom Thermostat gemessene Temperatur anhand externer
-    Thermometer korrigiert. Es wird nur gesendet, wenn sich der Zielwert
-    ändert (schont den Homematic-Duty-Cycle).
+    Optional ermittelt der Blueprint anhand externer Thermometer, welcher
+    Temperatur-Offset für die Thermostate sinnvoll wäre (Empfehlung in einem
+    Helfer, Offset von Hand in OpenCCU setzen), oder korrigiert den gesendeten
+    Sollwert laufend. Es wird nur gesendet, wenn sich der Zielwert ändert
+    (schont den Homematic-Duty-Cycle).
   domain: automation
   input:
     raum:
@@ -269,29 +271,56 @@ blueprint:
         korrektur_methode:
           name: Art der Korrektur
           description: >-
-            Offset: Das Thermostat bekommt einen Temperatur-Offset, sodass seine
-            Ist-Temperatur der Raumtemperatur entspricht. Am Thermostat steht dann
-            der echte Sollwert. Wird nur selten angepasst (schont Batterie und
-            Gerätespeicher), reagiert dafür träger.
-            Sollwert: Der an das Thermostat gesendete Sollwert wird verschoben.
-            Reagiert schneller, aber am Thermostat steht nicht der echte Sollwert.
-          default: offset
+            Offset lernen: Die Thermostate regeln mit ihrem eigenen Fühler und
+            dem Offset, den du in OpenCCU von Hand einstellst. Der Blueprint
+            ermittelt im Hintergrund, welcher Offset sinnvoll wäre, und schreibt
+            die Empfehlung in einen Helfer. Am Thermostat steht der echte Sollwert.
+            Sollwert verschieben: Der an das Thermostat gesendete Sollwert wird
+            laufend korrigiert. Reagiert schneller, aber am Thermostat steht nicht
+            der echte Sollwert.
+          default: lernen
           selector:
             select:
               options:
-                - label: Offset am Thermostat (Anzeige stimmt)
-                  value: offset
-                - label: Sollwert verschieben (schneller, Anzeige weicht ab)
+                - label: Offset lernen (Empfehlung im Helfer, Offset von Hand setzen)
+                  value: lernen
+                - label: Sollwert verschieben (Anzeige weicht ab)
                   value: sollwert
                 - label: Keine Korrektur
                   value: aus
-        offset_entitaeten:
-          name: Offset-Entitäten der Thermostate
+        offset_empfehlung:
+          name: Offset-Empfehlung (Helfer)
           description: >-
-            Nur für „Offset“. Pro Thermostat die Entität „Temperature offset“
-            (select oder number). Sie muss in Homematic(IP) Local erst
-            freigeschaltet werden (un_ignore „TEMPERATURE_OFFSET“). Die Zuordnung
-            zum Thermostat erfolgt automatisch über das Gerät.
+            Zahl-Helfer, z. B. „<Raum> Offset-Empfehlung“: Minimum -5, Maximum 5,
+            Schrittweite 0,001, Einheit K, Modus „Eingabefeld“. Enthält den
+            gleitenden Mittelwert des Offsets, der nötig wäre, damit die
+            Thermostate die Raumtemperatur messen. Auf 0,5 gerundet in OpenCCU
+            eintragen.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: input_number
+        offset_proben:
+          name: Anzahl Messungen (Zähler-Helfer, optional)
+          description: >-
+            Zählt, wie viele Messungen in die Empfehlung eingeflossen sind.
+            Zähler zurücksetzen = neu lernen (die nächste Messung wird direkt
+            übernommen).
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: counter
+        offset_entitaeten:
+          name: Aktueller Offset der Thermostate (optional)
+          description: >-
+            Pro Thermostat die Entität „Temperature offset“ (select oder number,
+            in Homematic(IP) Local per un_ignore „TEMPERATURE_OFFSET“
+            freischalten). Wird nur gelesen, nie geschrieben. Damit bleibt die
+            Empfehlung richtig, nachdem du einen Offset eingetragen hast.
+            Ohne diese Entitäten: Nach dem Eintragen eines Offsets den Zähler
+            zurücksetzen.
           default: []
           selector:
             entity:
@@ -299,34 +328,36 @@ blueprint:
                 - domain: select
                 - domain: number
               multiple: true
-        offset_schwelle:
-          name: Offset erst ändern ab Abweichung
+        lern_zeitraum:
+          name: Mittelungszeitraum
+          description: >-
+            Ungefährer Zeitraum, über den gemittelt wird. Länger = ruhiger,
+            aber reagiert langsamer auf Änderungen.
+          default: 48
+          selector:
+            number:
+              min: 6
+              max: 336
+              step: 6
+              unit_of_measurement: h
+              mode: box
+        lern_toleranz:
+          name: Nur messen, wenn Thermostat eingeschwungen
+          description: >-
+            Gemessen wird nur, wenn die Ist-Temperatur des Thermostats höchstens
+            so weit von seinem Sollwert entfernt ist. Beim Aufheizen und Abkühlen
+            ist die Differenz zwischen Heizkörper und Raum nicht aussagekräftig.
           default: 0.5
           selector:
             number:
-              min: 0.5
+              min: 0.2
               max: 2
-              step: 0.5
+              step: 0.1
               unit_of_measurement: K
               mode: slider
-        offset_abstand:
-          name: Offset höchstens alle … Stunden ändern
-          description: >-
-            MASTER-Parameter sollten nicht zu oft geschrieben werden, weil das
-            den Gerätespeicher abnutzt und Funkzeit kostet.
-          default: 3
-          selector:
-            number:
-              min: 1
-              max: 24
-              step: 1
-              unit_of_measurement: h
-              mode: slider
         korrektur_max:
-          name: Maximale Korrektur
-          description: >-
-            Wie weit Offset bzw. gesendeter Sollwert höchstens korrigieren darf.
-            Der Offset ist am Gerät auf ±3,5 K begrenzt.
+          name: Maximale Korrektur (nur „Sollwert verschieben“)
+          description: Wie weit der gesendete Sollwert höchstens vom Soll abweichen darf.
           default: 3
           selector:
             number:
@@ -364,7 +395,7 @@ triggers:
     id: sync
   - trigger: time_pattern
     minutes: !input abgleich_intervall
-    id: sync
+    id: abgleich
   - trigger: state
     entity_id:
       - !input heizen_erlaubt
@@ -462,8 +493,12 @@ variables:
   k_max: !input korrektur_max
   methode: !input korrektur_methode
   offset_entitaeten: !input offset_entitaeten
-  offset_schwelle: !input offset_schwelle
-  offset_abstand: !input offset_abstand
+  e_empf: !input offset_empfehlung
+  e_proben: !input offset_proben
+  lern_zeitraum: !input lern_zeitraum
+  lern_toleranz: !input lern_toleranz
+  abgleich: !input abgleich_intervall
+  abgleich_min: "{{ abgleich | replace('/', '') | int(15) }}"
   modus_erzwingen: !input manuell_erzwingen
 
 # Antworten auf Benachrichtigungen anderer Räume/Automationen sofort ignorieren
@@ -591,11 +626,34 @@ actions:
       korrektur_aktiv: >-
         {{ methode == 'sollwert' and raum_werte | count > 0
            and not frost_aktiv and k_max | float(0) > 0 }}
-      # Offset nur nachführen, wenn normal geheizt wird (bei Frostschutz/Fenster
-      # offen ist der Heizkörper kalt und die Differenz nicht aussagekräftig)
-      offset_aktiv: >-
-        {{ methode == 'offset' and raum_werte | count > 0
-           and offset_entitaeten | count > 0 and not frost_aktiv }}
+      # Offset lernen: Messung = Offset, der jetzt nötig wäre, damit das
+      # Thermostat die Raumtemperatur misst (Mittel über alle Thermostate).
+      # Nur Thermostate, die eingeschwungen sind (Ist nahe Soll), zählen –
+      # beim Aufheizen/Abkühlen ist die Differenz nicht aussagekräftig.
+      lern_messung: >-
+        {% set ns = namespace(s=0, n=0, o=0) %}
+        {% if raum_werte | count > 0 %}
+          {% for t in thermostate %}
+            {% set ti = state_attr(t, 'current_temperature') %}
+            {% set tz = state_attr(t, 'temperature') %}
+            {% if ti is number and tz is number and (ti - tz) | abs <= lern_toleranz | float(0.5) %}
+              {% set d = device_id(t) %}
+              {% set ns.o = 0 %}
+              {% for e in offset_entitaeten %}
+                {% if d and device_id(e) == d %}
+                  {% set m = states(e) | regex_findall('-?[0-9]+(?:[.,][0-9]+)?') %}
+                  {% if m | count > 0 %}{% set ns.o = m[0] | replace(',', '.') | float %}{% endif %}
+                {% endif %}
+              {% endfor %}
+              {% set ns.s = ns.s + ns.o + raum_ist | float - ti %}
+              {% set ns.n = ns.n + 1 %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ (ns.s / ns.n) | round(3) if ns.n > 0 else 'none' }}
+      lernen_aktiv: >-
+        {{ methode == 'lernen' and e_empf != '' and trigger.id == 'abgleich'
+           and not frost_aktiv and lern_messung is number }}
 
   # 2b) Manuelle Änderung am Thermostat erkennen.
   #     Als manuell gilt: Die Änderung stammt nicht aus einer Automation/einem
@@ -672,6 +730,33 @@ actions:
           # auf alle Thermostate des Raums überträgt.
           - stop: Manuelle Änderung übernommen
 
+  # Offset-Empfehlung lernen (gleitender Mittelwert, nur bei Abgleich-Läufen)
+  - if:
+      - "{{ lernen_aktiv }}"
+    then:
+      - variables:
+          lern_alt: "{{ states(e_empf) | float(0) }}"
+          lern_n: "{{ states(e_proben) | int(0) if e_proben != '' else -1 }}"
+          lern_alpha: >-
+            {{ [abgleich_min / ([lern_zeitraum | float(24), 1] | max * 60), 1] | min }}
+          lern_neu: >-
+            {% set lo = state_attr(e_empf, 'min') | float(-5) %}
+            {% set hi = state_attr(e_empf, 'max') | float(5) %}
+            {% set v = lern_messung | float if lern_n == 0
+                       else lern_alt + lern_alpha * (lern_messung | float - lern_alt) %}
+            {{ [[v, lo] | max, hi] | min | round(3) }}
+      - action: input_number.set_value
+        target:
+          entity_id: "{{ e_empf }}"
+        data:
+          value: "{{ lern_neu }}"
+      - if:
+          - "{{ e_proben != '' }}"
+        then:
+          - action: counter.increment
+            target:
+              entity_id: "{{ e_proben }}"
+
   # Status und berechnete Soll-Temperatur für das Dashboard ausgeben
   - if:
       - "{{ e_status != '' }}"
@@ -725,62 +810,3 @@ actions:
                 entity_id: "{{ repeat.item }}"
               data:
                 temperature: "{{ ziel }}"
-
-        # Offset nachführen (Methode „Offset“)
-        - if:
-            - "{{ offset_aktiv and thermo_ist is number }}"
-          then:
-            - variables:
-                # Offset-Entität desselben Geräts suchen
-                off_e: >-
-                  {% set d = device_id(repeat.item) %}
-                  {% set ns = namespace(e='') %}
-                  {% for e in offset_entitaeten %}
-                    {% if d and device_id(e) == d %}{% set ns.e = e %}{% endif %}
-                  {% endfor %}
-                  {{ ns.e }}
-                # Aktuellen Offset lesen (z. B. „-1.5K“, „-1,5 K“ oder -1.5)
-                off_alt: >-
-                  {% set m = (states(off_e) if off_e else '') | regex_findall('-?[0-9]+(?:[.,][0-9]+)?') %}
-                  {{ m[0] | replace(',', '.') | float if m | count > 0 else 'none' }}
-                off_grenze: "{{ [k_max | float(3), 3.5] | min }}"
-            - if:
-                - "{{ off_e != '' and off_alt is number }}"
-                # Ist-Wert des Thermostats enthält den aktuellen Offset schon
-                - >-
-                  {% set roh = off_alt + raum_ist | float - thermo_ist %}
-                  {% set neu = [[(roh * 2) | round / 2, -off_grenze | float] | max, off_grenze | float] | min %}
-                  {{ (neu - off_alt) | abs >= offset_schwelle | float(0.5) }}
-                - "{{ (now() - states[off_e].last_changed).total_seconds() >= offset_abstand | float(3) * 3600 }}"
-              then:
-                - variables:
-                    off_neu: >-
-                      {% set roh = off_alt + raum_ist | float - thermo_ist %}
-                      {{ [[(roh * 2) | round / 2, -off_grenze | float] | max, off_grenze | float] | min }}
-                - if:
-                    - "{{ off_e.startswith('number.') }}"
-                  then:
-                    - action: number.set_value
-                      target:
-                        entity_id: "{{ off_e }}"
-                      data:
-                        value: "{{ off_neu }}"
-                  else:
-                    # Passende Option der Auswahl finden
-                    - action: select.select_option
-                      target:
-                        entity_id: "{{ off_e }}"
-                      data:
-                        option: >-
-                          {% set ns = namespace(best='', d=99) %}
-                          {% for o in state_attr(off_e, 'options') or [] %}
-                            {% set m = o | regex_findall('-?[0-9]+(?:[.,][0-9]+)?') %}
-                            {% if m | count > 0 %}
-                              {% set v = m[0] | replace(',', '.') | float %}
-                              {% if (v - off_neu | float) | abs < ns.d %}
-                                {% set ns.d = (v - off_neu | float) | abs %}
-                                {% set ns.best = o %}
-                              {% endif %}
-                            {% endif %}
-                          {% endfor %}
-                          {{ ns.best }}
