@@ -12,10 +12,12 @@ blueprint:
     5. Raum belegt (Wärme-Szene) oder Zeitplan aktiv → Komforttemperatur
     6. Sonst → Absenktemperatur
 
-    Optional ermittelt der Blueprint anhand externer Thermometer, welcher
-    Temperatur-Offset für die Thermostate sinnvoll wäre (Empfehlung in einem
-    Helfer, Offset von Hand in OpenCCU setzen), oder korrigiert den gesendeten
-    Sollwert laufend. Es wird nur gesendet, wenn sich der Zielwert ändert
+    Übersteuern aus dem Dashboard mit Abfrage der Dauer: Blueprint
+    „Heizung – Raum übersteuern“ (Skript). Sinnvollen Thermostat-Offset
+    ermitteln: Blueprint „Heizung – Offset lernen“.
+
+    Optional korrigiert der Blueprint den gesendeten Sollwert anhand externer
+    Thermometer. Es wird nur gesendet, wenn sich der Zielwert ändert
     (schont den Homematic-Duty-Cycle).
   domain: automation
   input:
@@ -271,90 +273,21 @@ blueprint:
         korrektur_methode:
           name: Art der Korrektur
           description: >-
-            Offset lernen: Die Thermostate regeln mit ihrem eigenen Fühler und
-            dem Offset, den du in OpenCCU von Hand einstellst. Der Blueprint
-            ermittelt im Hintergrund, welcher Offset sinnvoll wäre, und schreibt
-            die Empfehlung in einen Helfer. Am Thermostat steht der echte Sollwert.
+            Offset im Thermostat: Die Thermostate regeln mit ihrem eigenen Fühler
+            und dem Offset, den du in OpenCCU einstellst (sinnvollen Wert mit dem
+            Blueprint „Heizung – Offset lernen“ ermitteln). Am Thermostat steht der
+            echte Sollwert. Die Raumthermometer dienen dann nur der Anzeige.
             Sollwert verschieben: Der an das Thermostat gesendete Sollwert wird
             laufend korrigiert. Reagiert schneller, aber am Thermostat steht nicht
             der echte Sollwert.
-          default: lernen
+          default: offset
           selector:
             select:
               options:
-                - label: Offset lernen (Empfehlung im Helfer, Offset von Hand setzen)
-                  value: lernen
+                - label: Offset im Thermostat (in OpenCCU eingestellt)
+                  value: offset
                 - label: Sollwert verschieben (Anzeige weicht ab)
                   value: sollwert
-                - label: Keine Korrektur
-                  value: aus
-        offset_empfehlung:
-          name: Offset-Empfehlung (Helfer)
-          description: >-
-            Zahl-Helfer, z. B. „<Raum> Offset-Empfehlung“: Minimum -5, Maximum 5,
-            Schrittweite 0,001, Einheit K, Modus „Eingabefeld“. Enthält den
-            gleitenden Mittelwert des Offsets, der nötig wäre, damit die
-            Thermostate die Raumtemperatur messen. Auf 0,5 gerundet in OpenCCU
-            eintragen.
-          default: ""
-          selector:
-            entity:
-              filter:
-                - domain: input_number
-        offset_proben:
-          name: Anzahl Messungen (Zähler-Helfer, optional)
-          description: >-
-            Zählt, wie viele Messungen in die Empfehlung eingeflossen sind.
-            Zähler zurücksetzen = neu lernen (die nächste Messung wird direkt
-            übernommen).
-          default: ""
-          selector:
-            entity:
-              filter:
-                - domain: counter
-        offset_entitaeten:
-          name: Aktueller Offset der Thermostate (optional)
-          description: >-
-            Pro Thermostat die Entität „Temperature offset“ (select oder number,
-            in Homematic(IP) Local per un_ignore „TEMPERATURE_OFFSET“
-            freischalten). Wird nur gelesen, nie geschrieben. Damit bleibt die
-            Empfehlung richtig, nachdem du einen Offset eingetragen hast.
-            Ohne diese Entitäten: Nach dem Eintragen eines Offsets den Zähler
-            zurücksetzen.
-          default: []
-          selector:
-            entity:
-              filter:
-                - domain: select
-                - domain: number
-              multiple: true
-        lern_zeitraum:
-          name: Mittelungszeitraum
-          description: >-
-            Ungefährer Zeitraum, über den gemittelt wird. Länger = ruhiger,
-            aber reagiert langsamer auf Änderungen.
-          default: 48
-          selector:
-            number:
-              min: 6
-              max: 336
-              step: 6
-              unit_of_measurement: h
-              mode: box
-        lern_toleranz:
-          name: Nur messen, wenn Thermostat eingeschwungen
-          description: >-
-            Gemessen wird nur, wenn die Ist-Temperatur des Thermostats höchstens
-            so weit von seinem Sollwert entfernt ist. Beim Aufheizen und Abkühlen
-            ist die Differenz zwischen Heizkörper und Raum nicht aussagekräftig.
-          default: 0.5
-          selector:
-            number:
-              min: 0.2
-              max: 2
-              step: 0.1
-              unit_of_measurement: K
-              mode: slider
         korrektur_max:
           name: Maximale Korrektur (nur „Sollwert verschieben“)
           description: Wie weit der gesendete Sollwert höchstens vom Soll abweichen darf.
@@ -452,6 +385,11 @@ triggers:
   - trigger: event
     event_type: mobile_app_notification_action
     id: push_antwort
+  - trigger: event
+    event_type: heizung_uebersteuern
+    event_data:
+      auswahl: !input override_auswahl
+    id: dashboard
 
 variables:
   thermostate: !input thermostate
@@ -492,13 +430,6 @@ variables:
   thermometer: !input thermometer
   k_max: !input korrektur_max
   methode: !input korrektur_methode
-  offset_entitaeten: !input offset_entitaeten
-  e_empf: !input offset_empfehlung
-  e_proben: !input offset_proben
-  lern_zeitraum: !input lern_zeitraum
-  lern_toleranz: !input lern_toleranz
-  abgleich: !input abgleich_intervall
-  abgleich_min: "{{ abgleich | replace('/', '') | int(15) }}"
   modus_erzwingen: !input manuell_erzwingen
 
 # Antworten auf Benachrichtigungen anderer Räume/Automationen sofort ignorieren
@@ -506,7 +437,7 @@ conditions:
   - >-
     {{ trigger.id != 'push_antwort'
        or (trigger.event.data.action is string
-           and trigger.event.data.action.startswith(push_prefix ~ '_')) }}
+           and trigger.event.data.action.rsplit('_', 1)[0] == push_prefix) }}
 
 actions:
   # 1) Helfer aktualisieren, je nachdem was ausgelöst hat
@@ -533,11 +464,18 @@ actions:
           - if:
               - "{{ states(e_override) in ['Warm', 'Kalt', 'Manuell'] }}"
             then:
-              - action: timer.start
-                target:
-                  entity_id: !input override_timer
-                data:
-                  duration: "{{ (states(e_stunden) | float(2) * 3600) | int }}"
+              # Timer wurde gerade erst gestartet (Skript, Drehen am Thermostat)?
+              # Dann dessen Dauer behalten, sonst Standarddauer.
+              - if:
+                  - >-
+                    {{ not (is_state(e_timer, 'active')
+                            and (now() - states[e_timer].last_updated).total_seconds() < 15) }}
+                then:
+                  - action: timer.start
+                    target:
+                      entity_id: !input override_timer
+                    data:
+                      duration: "{{ (states(e_stunden) | float(2) * 3600) | int }}"
             else:
               - action: timer.cancel
                 target:
@@ -586,11 +524,55 @@ actions:
                     data:
                       tag: "{{ push_tag }}"
           - stop: Dauer per Benachrichtigung gewählt
+      - conditions:
+          - condition: trigger
+            id: dashboard
+        sequence:
+          - variables:
+              d_modus: "{{ trigger.event.data.modus | default('Warm') }}"
+              d_sek: "{{ (trigger.event.data.stunden | default(2) | float(2) * 3600) | int }}"
+              d_temp: "{{ trigger.event.data.temperatur | default(none) }}"
+          - if:
+              - "{{ d_modus == 'Manuell' and d_temp is not none }}"
+            then:
+              - action: input_number.set_value
+                target:
+                  entity_id: !input manuell_temp
+                data:
+                  value: >-
+                    {% set lo = state_attr(e_manuell, 'min') | float(4.5) %}
+                    {% set hi = state_attr(e_manuell, 'max') | float(30.5) %}
+                    {{ [[d_temp | float, lo] | max, hi] | min }}
+          - if:
+              - "{{ d_modus in ['Warm', 'Kalt', 'Manuell'] }}"
+            then:
+              # Erst Timer, dann Auswahl – so behält die Übersteuerung diese Dauer
+              - action: timer.start
+                target:
+                  entity_id: !input override_timer
+                data:
+                  duration: "{{ d_sek }}"
+          - action: input_select.select_option
+            target:
+              entity_id: !input override_auswahl
+            data:
+              option: "{{ d_modus if d_modus in ['Warm', 'Kalt', 'Manuell'] else 'Automatik' }}"
 
   # 2) Soll-Temperatur aus dem aktuellen Zustand berechnen
   - variables:
       heizen: "{{ is_state(e_heizen, 'on') }}"
-      fenster_offen: "{{ fenster | select('is_state', 'on') | list | count > 0 }}"
+      # Fenster zählt erst als offen, wenn es länger als die Verzögerung offen ist –
+      # auch wenn ein anderer Auslöser (Licht, Abgleich …) zwischendurch läuft
+      fenster_offen: >-
+        {% set verz = states(tv_fenster_verz) | float(30) %}
+        {% set ns = namespace(offen=false) %}
+        {% for f in fenster %}
+          {% if is_state(f, 'on')
+                and (now() - states[f].last_changed).total_seconds() >= verz - 2 %}
+            {% set ns.offen = true %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.offen }}
       override: "{{ states(e_override) }}"
       anwesend: >-
         {% if anwesenheit_modus == 'egal' %}true
@@ -626,34 +608,6 @@ actions:
       korrektur_aktiv: >-
         {{ methode == 'sollwert' and raum_werte | count > 0
            and not frost_aktiv and k_max | float(0) > 0 }}
-      # Offset lernen: Messung = Offset, der jetzt nötig wäre, damit das
-      # Thermostat die Raumtemperatur misst (Mittel über alle Thermostate).
-      # Nur Thermostate, die eingeschwungen sind (Ist nahe Soll), zählen –
-      # beim Aufheizen/Abkühlen ist die Differenz nicht aussagekräftig.
-      lern_messung: >-
-        {% set ns = namespace(s=0, n=0, o=0) %}
-        {% if raum_werte | count > 0 %}
-          {% for t in thermostate %}
-            {% set ti = state_attr(t, 'current_temperature') %}
-            {% set tz = state_attr(t, 'temperature') %}
-            {% if ti is number and tz is number and (ti - tz) | abs <= lern_toleranz | float(0.5) %}
-              {% set d = device_id(t) %}
-              {% set ns.o = 0 %}
-              {% for e in offset_entitaeten %}
-                {% if d and device_id(e) == d %}
-                  {% set m = states(e) | regex_findall('-?[0-9]+(?:[.,][0-9]+)?') %}
-                  {% if m | count > 0 %}{% set ns.o = m[0] | replace(',', '.') | float %}{% endif %}
-                {% endif %}
-              {% endfor %}
-              {% set ns.s = ns.s + ns.o + raum_ist | float - ti %}
-              {% set ns.n = ns.n + 1 %}
-            {% endif %}
-          {% endfor %}
-        {% endif %}
-        {{ (ns.s / ns.n) | round(3) if ns.n > 0 else 'none' }}
-      lernen_aktiv: >-
-        {{ methode == 'lernen' and e_empf != '' and trigger.id == 'abgleich'
-           and not frost_aktiv and lern_messung is number }}
 
   # 2b) Manuelle Änderung am Thermostat erkennen.
   #     Als manuell gilt: Die Änderung stammt nicht aus einer Automation/einem
@@ -665,6 +619,11 @@ actions:
       - "{{ manuell_erkennen and not frost_aktiv }}"
       - "{{ trigger.to_state is not none and trigger.to_state.context.parent_id is none }}"
       - "{{ trigger.to_state.attributes.temperature is number }}"
+      # Nicht nach HA-Neustart/Integrations-Reload (Thermostat war nicht verfügbar)
+      - >-
+        {{ trigger.from_state is not none
+           and trigger.from_state.state not in ['unavailable', 'unknown']
+           and trigger.from_state.attributes.temperature is number }}
     then:
       - variables:
           m_neu: "{{ trigger.to_state.attributes.temperature | float }}"
@@ -674,6 +633,15 @@ actions:
               {{ [[m_thermo_ist - raum_ist | float, -(k_max | float)] | max, k_max | float] | min }}
             {% else %}0{% endif %}
           m_erwartet: "{{ [[((soll | float + m_k | float) * 2) | round / 2, 4.5] | max, 30.5] | min }}"
+          # Beim Senden galt evtl. noch die alte Ist-Temperatur des Thermostats
+          # (nur relevant bei „Sollwert verschieben“)
+          m_thermo_alt: "{{ trigger.from_state.attributes.current_temperature }}"
+          m_erwartet_alt: >-
+            {% set k = 0 %}
+            {% if korrektur_aktiv and m_thermo_alt is number %}
+              {% set k = [[m_thermo_alt - raum_ist | float, -(k_max | float)] | max, k_max | float] | min %}
+            {% endif %}
+            {{ [[((soll | float + k) * 2) | round / 2, 4.5] | max, 30.5] | min }}
           # Wert am Thermostat in Raum-Soll zurückrechnen (Korrektur abziehen)
           m_soll: >-
             {% set lo = state_attr(e_manuell, 'min') | float(4.5) %}
@@ -681,6 +649,7 @@ actions:
             {{ [[((m_neu - m_k | float) * 2) | round / 2, lo] | max, hi] | min }}
       - if:
           - "{{ (m_neu - m_erwartet | float) | abs >= 0.25 }}"
+          - "{{ (m_neu - m_erwartet_alt | float) | abs >= 0.25 }}"
         then:
           - action: input_number.set_value
             target:
@@ -729,33 +698,6 @@ actions:
           # Die Helfer-Änderungen lösen einen neuen Lauf aus, der den Wert
           # auf alle Thermostate des Raums überträgt.
           - stop: Manuelle Änderung übernommen
-
-  # Offset-Empfehlung lernen (gleitender Mittelwert, nur bei Abgleich-Läufen)
-  - if:
-      - "{{ lernen_aktiv }}"
-    then:
-      - variables:
-          lern_alt: "{{ states(e_empf) | float(0) }}"
-          lern_n: "{{ states(e_proben) | int(0) if e_proben != '' else -1 }}"
-          lern_alpha: >-
-            {{ [abgleich_min / ([lern_zeitraum | float(24), 1] | max * 60), 1] | min }}
-          lern_neu: >-
-            {% set lo = state_attr(e_empf, 'min') | float(-5) %}
-            {% set hi = state_attr(e_empf, 'max') | float(5) %}
-            {% set v = lern_messung | float if lern_n == 0
-                       else lern_alt + lern_alpha * (lern_messung | float - lern_alt) %}
-            {{ [[v, lo] | max, hi] | min | round(3) }}
-      - action: input_number.set_value
-        target:
-          entity_id: "{{ e_empf }}"
-        data:
-          value: "{{ lern_neu }}"
-      - if:
-          - "{{ e_proben != '' }}"
-        then:
-          - action: counter.increment
-            target:
-              entity_id: "{{ e_proben }}"
 
   # Status und berechnete Soll-Temperatur für das Dashboard ausgeben
   - if:
