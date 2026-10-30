@@ -120,7 +120,12 @@ blueprint:
       icon: mdi:lightbulb-group
       input:
         belegt:
-          name: Raum belegt (Helfer)
+          name: Raum belegt (Helfer, optional)
+          description: >-
+            Schalter-Helfer, den Wärme-Szenen einschalten und der ausgeht, wenn
+            alle Lichter lange genug aus sind. Leer lassen für Räume, die nur
+            nach Zeitplan heizen.
+          default: ""
           selector:
             entity:
               filter:
@@ -144,7 +149,9 @@ blueprint:
                 - domain: light
               multiple: true
         belegt_aus_verzoegerung:
-          name: Verzögerung bis „belegt“ aus (Helfer, Minuten)
+          name: Verzögerung bis „belegt“ aus (Helfer, Minuten, optional)
+          description: Leer lassen = 10 Minuten.
+          default: ""
           selector:
             entity:
               filter:
@@ -161,9 +168,8 @@ blueprint:
         warm_logik:
           name: Komfort, wenn …
           description: >-
-            Wann auf Komforttemperatur geheizt wird. Bei „nur Zeitplan“ wird
-            „belegt“ ignoriert – der Helfer muss trotzdem ausgewählt sein, die
-            Wärme-Szenen können leer bleiben.
+            Wann auf Komforttemperatur geheizt wird. Ohne „belegt“-Helfer gilt
+            der Raum nie als belegt.
           default: oder
           selector:
             select:
@@ -340,6 +346,7 @@ max: 10
 trigger_variables:
   tv_fenster_verz: !input fenster_verzoegerung
   tv_belegt_verz: !input belegt_aus_verzoegerung
+  tv_belegt: !input belegt
 
 triggers:
   - trigger: homeassistant
@@ -354,10 +361,16 @@ triggers:
       - !input temp_warm
       - !input temp_kalt
       - !input temp_frost
-      - !input belegt
       - !input manuell_temp
       - zone.home
     to: ~
+    id: sync
+  # „belegt“ ist optional – daher Template-Auslöser (leeres Feld = nie)
+  - trigger: template
+    value_template: "{{ tv_belegt != '' and is_state(tv_belegt, 'on') }}"
+    id: sync
+  - trigger: template
+    value_template: "{{ tv_belegt != '' and is_state(tv_belegt, 'off') }}"
     id: sync
   - trigger: state
     entity_id: !input thermostate
@@ -465,18 +478,20 @@ actions:
       - conditions:
           - condition: trigger
             id: szene
+          - "{{ e_belegt != '' }}"
         sequence:
           - action: input_boolean.turn_on
             target:
-              entity_id: !input belegt
+              entity_id: "{{ e_belegt }}"
       - conditions:
           - condition: trigger
             id: licht_aus
+          - "{{ e_belegt != '' }}"
           - "{{ lichter | select('is_state', 'on') | list | count == 0 }}"
         sequence:
           - action: input_boolean.turn_off
             target:
-              entity_id: !input belegt
+              entity_id: "{{ e_belegt }}"
       - conditions:
           - condition: trigger
             id: override
@@ -601,7 +616,7 @@ actions:
         {% else %}{{ personen | select('is_state', 'home') | list | count > 0 }}
         {% endif %}
       warm_gewuenscht: >-
-        {% set b = is_state(e_belegt, 'on') %}
+        {% set b = e_belegt != '' and is_state(e_belegt, 'on') %}
         {% set z = zeitplan | select('is_state', 'on') | list | count > 0 %}
         {% if warm_logik == 'zeitplan' %}{{ z }}
         {% elif warm_logik == 'belegt' %}{{ b }}
