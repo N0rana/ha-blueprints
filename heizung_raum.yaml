@@ -9,7 +9,8 @@ blueprint:
     3. Übersteuerung Warm/Kalt/Manuell (bis der Timer abläuft) –
        „Manuell“ wird automatisch gesetzt, wenn am Thermostat gedreht wird
     4. Benötigte Personen nicht zu Hause → Absenktemperatur
-    5. Raum belegt (Wärme-Szene) oder Zeitplan aktiv → Komforttemperatur
+    5. Raum belegt (Wärme-Szene) und/oder Zeitplan aktiv → Komforttemperatur
+       (pro Raum einstellbar unter „Komfort, wenn …“)
     6. Sonst → Absenktemperatur
 
     Übersteuern aus dem Dashboard mit Abfrage der Dauer: Blueprint
@@ -150,13 +151,31 @@ blueprint:
                 - domain: input_number
         zeitplan:
           name: Heizzeiten (Zeitplan-Helfer, optional)
-          description: Während ein Zeitplan aktiv ist, wird auf Komforttemperatur geheizt.
+          description: Zeitplan-Helfer für die Komfortzeiten. Wie er wirkt, legt „Komfort, wenn …“ fest.
           default: []
           selector:
             entity:
               filter:
                 - domain: schedule
               multiple: true
+        warm_logik:
+          name: Komfort, wenn …
+          description: >-
+            Wann auf Komforttemperatur geheizt wird. Bei „nur Zeitplan“ wird
+            „belegt“ ignoriert – der Helfer muss trotzdem ausgewählt sein, die
+            Wärme-Szenen können leer bleiben.
+          default: oder
+          selector:
+            select:
+              options:
+                - label: Raum belegt ODER Zeitplan aktiv
+                  value: oder
+                - label: nur Zeitplan (Belegung egal)
+                  value: zeitplan
+                - label: nur Belegung (Zeitplan egal)
+                  value: belegt
+                - label: Raum belegt UND Zeitplan aktiv
+                  value: und
 
     anwesenheit:
       name: Anwesenheit
@@ -425,6 +444,7 @@ variables:
   fenster: !input fenster
   lichter: !input lichter
   zeitplan: !input zeitplan
+  warm_logik: !input warm_logik
   personen: !input personen
   anwesenheit_modus: !input anwesenheit_modus
   thermometer: !input thermometer
@@ -581,7 +601,13 @@ actions:
         {% else %}{{ personen | select('is_state', 'home') | list | count > 0 }}
         {% endif %}
       warm_gewuenscht: >-
-        {{ is_state(e_belegt, 'on') or zeitplan | select('is_state', 'on') | list | count > 0 }}
+        {% set b = is_state(e_belegt, 'on') %}
+        {% set z = zeitplan | select('is_state', 'on') | list | count > 0 %}
+        {% if warm_logik == 'zeitplan' %}{{ z }}
+        {% elif warm_logik == 'belegt' %}{{ b }}
+        {% elif warm_logik == 'und' %}{{ b and z }}
+        {% else %}{{ b or z }}
+        {% endif %}
       t_warm: "{{ states(e_warm) | float(20) }}"
       t_kalt: "{{ states(e_kalt) | float(17) }}"
       t_frost: "{{ states(e_frost) | float(8) }}"
