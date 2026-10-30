@@ -1,0 +1,69 @@
+blueprint:
+  name: Heizung – Raum übersteuern
+  description: >-
+    Skript für das Dashboard: Beim Ausführen werden Modus, Dauer und ggf.
+    Temperatur abgefragt. Die Raumsteuerung des Raums übernimmt den Rest
+    (Timer, Rückkehr zur Automatik).
+
+    Pro Raum ein Skript aus diesem Blueprint anlegen und dem Bereich des
+    Raums zuordnen. Im Dashboard öffnet ein Tipp auf das Skript den Dialog
+    mit den Feldern.
+  domain: script
+  input:
+    override_auswahl:
+      name: Übersteuerung des Raums (Dropdown-Helfer)
+      description: Derselbe Helfer, der in der Raumsteuerung ausgewählt ist.
+      selector:
+        entity:
+          filter:
+            - domain: input_select
+
+fields:
+  modus:
+    name: Modus
+    required: true
+    default: Warm
+    selector:
+      select:
+        options:
+          - label: Warm (Komforttemperatur)
+            value: Warm
+          - label: Kalt (Absenktemperatur)
+            value: Kalt
+          - label: Eigene Temperatur
+            value: Manuell
+          - label: Zurück zur Automatik
+            value: Automatik
+  stunden:
+    name: Dauer
+    description: Wird bei „Zurück zur Automatik“ ignoriert.
+    default: 2
+    selector:
+      number:
+        min: 0.5
+        max: 24
+        step: 0.5
+        unit_of_measurement: h
+        mode: slider
+  temperatur:
+    name: Temperatur
+    description: Nur für „Eigene Temperatur“.
+    default: 21
+    selector:
+      number:
+        min: 5
+        max: 30
+        step: 0.5
+        unit_of_measurement: °C
+        mode: slider
+
+mode: single
+icon: mdi:hand-back-right
+
+sequence:
+  - event: heizung_uebersteuern
+    event_data:
+      auswahl: !input override_auswahl
+      modus: "{{ modus | default('Warm') }}"
+      stunden: "{{ stunden | default(2) | float(2) }}"
+      temperatur: "{{ temperatur | default(21) | float(21) }}"
